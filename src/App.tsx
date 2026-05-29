@@ -26,7 +26,8 @@ const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? DEFAULT_API_BASE).replace
 const INVENTORY_KEYS = new Set(['lhm', 'tjt']);
 const CHATGPT_SESSION_URL = 'https://chatgpt.com/api/auth/session';
 const OPENAI_LOGIN_URL = 'https://auth.openai.com/log-in-or-create-account';
-const TOKEN_PLACEHOLDER = '{"accessToken":"...","sessionToken":"...","user":{"email":"user@example.com"}}';
+const TOKEN_PLACEHOLDER =
+  '{"account":{"id":"5ad0a5c2-e5e7-48d1-b694-a7776081e519"},"accessToken":"...","sessionToken":"...","user":{"email":"user@example.com"}}';
 const HISTORY_STORAGE_KEY = 'card-recharge-records';
 
 type ApiEnvelope<T> = {
@@ -69,6 +70,9 @@ type RouteName = 'home' | 'records';
 type TokenPayload = {
   user?: {
     email?: unknown;
+  };
+  account?: {
+    id?: unknown;
   };
   expires?: unknown;
   accessToken?: unknown;
@@ -130,12 +134,18 @@ function maskTokenPayload(value: string) {
   if (!payload) return 'Token JSON 已填写，格式待校验';
 
   const email = typeof payload.user?.email === 'string' ? payload.user.email : '未识别邮箱';
-  return `Token JSON / ${email} / access ${maskSecret(payload.accessToken)} / session ${maskSecret(payload.sessionToken)}`;
+  const accountId = getTokenAccountId(token);
+  return `Token JSON / 账户 ${accountId ? maskValue(accountId) : '未识别'} / ${email} / access ${maskSecret(payload.accessToken)} / session ${maskSecret(payload.sessionToken)}`;
 }
 
 function getTokenEmail(value: string) {
   const payload = parseTokenPayload(value);
   return typeof payload?.user?.email === 'string' ? payload.user.email : '';
+}
+
+function getTokenAccountId(value: string) {
+  const payload = parseTokenPayload(value);
+  return typeof payload?.account?.id === 'string' ? payload.account.id.trim() : '';
 }
 
 function getRechargeEmail(tokenValue: string, inputValue: string) {
@@ -153,6 +163,9 @@ function validateTokenPayload(value: string) {
   }
   if (typeof payload.sessionToken !== 'string' || !payload.sessionToken.trim()) {
     return 'Token JSON 缺少 sessionToken';
+  }
+  if (!getTokenAccountId(token)) {
+    return 'Token JSON 缺少 account.id';
   }
 
   if (typeof payload.expires === 'string') {
@@ -413,13 +426,20 @@ function App() {
     setRedeemLoading(true);
     setNotice(null);
     const rechargeEmail = getRechargeEmail(normalizedToken, clientEmail);
+    const clientAccountId = getTokenAccountId(normalizedToken);
+
+    if (!clientAccountId) {
+      setRedeemLoading(false);
+      setNotice({ type: 'error', message: 'Token JSON 缺少 account.id，无法识别充值账户 ID' });
+      return;
+    }
 
     try {
       const data = await requestJson<RedeemResult>('/cards/redeem', {
         method: 'POST',
         body: JSON.stringify({
           code: checkedCard.code_plain,
-          client_id: normalizedToken,
+          client_id: clientAccountId,
           client_email: rechargeEmail,
         }),
       });
@@ -696,7 +716,7 @@ function App() {
                     placeholder={TOKEN_PLACEHOLDER}
                     autoComplete="off"
                   />
-                  <small className="field-hint">粘贴完整 JSON，至少需要包含 accessToken 和 sessionToken。</small>
+                  <small className="field-hint">粘贴完整 JSON，至少需要包含 account.id、accessToken 和 sessionToken。</small>
                 </div>
                 <label className="field">
                   <span>充值账户邮箱</span>
@@ -766,6 +786,10 @@ function App() {
               <div>
                 <dt>Token JSON</dt>
                 <dd>{maskTokenPayload(normalizedToken)}</dd>
+              </div>
+              <div>
+                <dt>充值账户 ID</dt>
+                <dd>{getTokenAccountId(normalizedToken) || '-'}</dd>
               </div>
               <div>
                 <dt>账户邮箱</dt>
