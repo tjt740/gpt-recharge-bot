@@ -19,7 +19,7 @@ import {
   UserCircle2,
   X,
 } from 'lucide-react';
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 
 const DEFAULT_API_BASE = '/api';
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? DEFAULT_API_BASE).replace(/\/$/, '');
@@ -285,18 +285,68 @@ function App() {
   const [inventoryError, setInventoryError] = useState('');
   const [queryLoading, setQueryLoading] = useState(false);
   const [redeemLoading, setRedeemLoading] = useState(false);
+  const activePanelRef = useRef<HTMLElement | null>(null);
+  const previousStepRef = useRef<Step>(step);
 
   const normalizedCode = useMemo(() => normalizeCode(cardCode), [cardCode]);
   const normalizedToken = useMemo(() => normalizeTokenPayload(clientId), [clientId]);
+  const tokenPayload = useMemo(() => parseTokenPayload(normalizedToken), [normalizedToken]);
+  const tokenAccountId = useMemo(() => getTokenAccountId(normalizedToken), [normalizedToken]);
+  const tokenEmail = useMemo(() => getTokenEmail(normalizedToken), [normalizedToken]);
   const canProceedToAccount = isRecordAvailable(checkedCard);
+  const tokenChecks = useMemo(
+    () => [
+      { label: 'JSON 格式', complete: Boolean(tokenPayload) },
+      { label: '账户 ID', complete: Boolean(tokenPayload && tokenAccountId) },
+      {
+        label: 'Access Token',
+        complete: Boolean(
+          tokenPayload && typeof tokenPayload.accessToken === 'string' && tokenPayload.accessToken.trim().length > 0,
+        ),
+      },
+      {
+        label: 'Session Token',
+        complete: Boolean(
+          tokenPayload && typeof tokenPayload.sessionToken === 'string' && tokenPayload.sessionToken.trim().length > 0,
+        ),
+      },
+      { label: '账户邮箱', complete: Boolean(tokenPayload && tokenEmail) },
+    ],
+    [tokenAccountId, tokenEmail, tokenPayload],
+  );
+  const flowSteps = [
+    {
+      key: 'card' as const,
+      number: '1',
+      title: '查询卡密',
+      hint: checkedCard ? '已验证' : '当前操作',
+      complete: Boolean(checkedCard),
+      active: step === 'card',
+      enabled: true,
+    },
+    {
+      key: 'account' as const,
+      number: '2',
+      title: '确认账户',
+      hint: step === 'done' ? '已确认' : canProceedToAccount ? '可继续' : '待解锁',
+      complete: step === 'done',
+      active: step === 'account',
+      enabled: canProceedToAccount,
+    },
+    {
+      key: 'done' as const,
+      number: '3',
+      title: '完成兑换',
+      hint: step === 'done' ? '已完成' : '待完成',
+      complete: step === 'done',
+      active: step === 'done',
+      enabled: false,
+    },
+  ];
 
   function handleTokenChange(value: string) {
     setClientId(value);
-
-    if (!clientEmail.trim()) {
-      const tokenEmail = getTokenEmail(value);
-      if (tokenEmail) setClientEmail(tokenEmail);
-    }
+    setClientEmail(getTokenEmail(value));
   }
 
   async function loadInventory() {
@@ -333,6 +383,21 @@ function App() {
   useEffect(() => {
     localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(history.map(sanitizeHistoryRecord)));
   }, [history]);
+
+  useEffect(() => {
+    if (route !== 'home' || previousStepRef.current === step) return;
+
+    previousStepRef.current = step;
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const timer = window.setTimeout(() => {
+      activePanelRef.current?.scrollIntoView({
+        behavior: prefersReducedMotion ? 'auto' : 'smooth',
+        block: 'start',
+      });
+    }, 80);
+
+    return () => window.clearTimeout(timer);
+  }, [route, step]);
 
   function navigate(routeName: RouteName) {
     window.history.pushState(null, '', getRouteUrl(routeName));
@@ -573,18 +638,18 @@ function App() {
     <>
     <main className="shell">
       <section className="topbar" aria-label="页面标题和库存">
-        <div>
+        <div className="top-title">
           <p className="page-kicker">Recharge</p>
           <h1>ChatGPT 自助充值中心</h1>
           <p className="page-subtitle">清爽、安全的卡密兑换流程。</p>
-        </div>
-
-        <div className="top-actions">
           <button className="record-top-button" type="button" onClick={() => navigate('records')}>
             <ClipboardCheck size={18} aria-hidden="true" />
             <span>充值记录</span>
             <strong>{history.length}</strong>
           </button>
+        </div>
+
+        <div className="top-actions">
           <button
             className={`inventory-tag ${getInventoryClass(inventory)}`}
             type="button"
@@ -602,23 +667,27 @@ function App() {
 
       <section className="layout home-layout">
         <div className="workspace">
-          <div className="steps" aria-label="兑换步骤">
-            <div className={`step ${step === 'card' ? 'active' : ''} ${checkedCard ? 'done' : ''}`}>
-              <span>1</span>
-              <p>查询卡密</p>
-            </div>
-            {canProceedToAccount || step === 'done' ? (
-              <>
-                <div className={`step ${step === 'account' ? 'active' : ''} ${step === 'done' ? 'done' : ''}`}>
-                  <span>2</span>
-                  <p>确认账户</p>
-                </div>
-                <div className={`step ${step === 'done' ? 'active done' : ''}`}>
-                  <span>3</span>
-                  <p>完成兑换</p>
-                </div>
-              </>
-            ) : null}
+          <div className={`steps progress-${step}`} aria-label="兑换步骤">
+            {flowSteps.map((item) => (
+              <button
+                className={`step ${item.active ? 'active' : ''} ${item.complete ? 'done' : ''} ${
+                  !item.enabled ? 'locked' : ''
+                }`}
+                type="button"
+                key={item.key}
+                onClick={() => {
+                  if (item.enabled) setStep(item.key);
+                }}
+                disabled={!item.enabled}
+                aria-current={item.active ? 'step' : undefined}
+              >
+                <span>{item.complete ? <CheckCircle2 size={18} aria-hidden="true" /> : item.number}</span>
+                <span className="step-copy">
+                  <strong>{item.title}</strong>
+                  <small>{item.hint}</small>
+                </span>
+              </button>
+            ))}
           </div>
 
           {notice ? (
@@ -629,7 +698,7 @@ function App() {
           ) : null}
 
           {step === 'card' ? (
-            <section className="panel">
+            <section className="panel flow-panel account-panel" ref={activePanelRef}>
               <div className="panel-heading">
                 <KeyRound size={22} aria-hidden="true" />
                 <div>
@@ -684,7 +753,7 @@ function App() {
           ) : null}
 
           {canProceedToAccount && step === 'account' ? (
-            <section className="panel">
+            <section className="panel flow-panel" ref={activePanelRef}>
               <div className="panel-heading">
                 <ShieldCheck size={22} aria-hidden="true" />
                 <div>
@@ -692,6 +761,16 @@ function App() {
                   <p>提交前会弹出确认窗口，避免 Token 或账户填错。</p>
                 </div>
               </div>
+
+              {checkedCard ? (
+                <div className="flow-summary">
+                  <CheckCircle2 size={18} aria-hidden="true" />
+                  <div>
+                    <strong>卡密已通过验证</strong>
+                    <p>{maskValue(checkedCard.code_plain)} · {formatDateTime(checkedCard.created_at)}</p>
+                  </div>
+                </div>
+              ) : null}
 
               <form className="account-form" onSubmit={handleOpenConfirm}>
                 <div className="field full">
@@ -715,8 +794,17 @@ function App() {
                     onChange={(event) => handleTokenChange(event.target.value)}
                     placeholder={TOKEN_PLACEHOLDER}
                     autoComplete="off"
+                    spellCheck={false}
                   />
                   <small className="field-hint">粘贴完整 JSON，至少需要包含 account.id、accessToken 和 sessionToken。</small>
+                  <div className="token-checklist" aria-label="Token JSON 检查">
+                    {tokenChecks.map((item) => (
+                      <span className={`token-check ${item.complete ? 'complete' : ''}`} key={item.label}>
+                        <CheckCircle2 size={14} aria-hidden="true" />
+                        {item.label}
+                      </span>
+                    ))}
+                  </div>
                 </div>
                 <label className="field">
                   <span>充值账户邮箱</span>
@@ -746,11 +834,13 @@ function App() {
           ) : null}
 
           {redeemMessage ? (
-            <section className="panel result-panel">
-              <div className="panel-heading">
-                <ClipboardCheck size={22} aria-hidden="true" />
+            <section className="panel flow-panel result-panel" ref={activePanelRef}>
+              <div className="panel-heading success-heading">
+                <span className="success-check-icon" aria-hidden="true">
+                  <CheckCircle2 size={30} />
+                </span>
                 <div>
-                  <h2>兑换结果</h2>
+                  <h2>充值成功</h2>
                   <p>{redeemMessage}</p>
                 </div>
               </div>
@@ -764,7 +854,13 @@ function App() {
 
       {showConfirm ? (
         <div className="modal-backdrop" role="presentation">
-          <section className="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+          <section
+            className={`modal confirm-modal ${redeemLoading ? 'is-redeeming' : ''}`}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="confirm-title"
+            aria-busy={redeemLoading}
+          >
             <button
               className="modal-close"
               type="button"
@@ -777,25 +873,38 @@ function App() {
               <LockKeyhole size={26} aria-hidden="true" />
             </div>
             <h2 id="confirm-title">确认充值账户</h2>
-            <p>请核对卡密、Token 和邮箱。确认后会立即调用兑换接口。</p>
+            <p>请核对卡密和充值账户。确认后会立即调用兑换接口。</p>
             <dl className="confirm-list">
-              <div>
+              <div className="confirm-item accent-card">
                 <dt>卡密</dt>
                 <dd>{checkedCard ? maskValue(checkedCard.code_plain) : '-'}</dd>
               </div>
-              <div>
-                <dt>Token JSON</dt>
-                <dd>{maskTokenPayload(normalizedToken)}</dd>
-              </div>
-              <div>
-                <dt>充值账户 ID</dt>
-                <dd>{getTokenAccountId(normalizedToken) || '-'}</dd>
-              </div>
-              <div>
+              <div className="confirm-item account-card">
                 <dt>账户邮箱</dt>
                 <dd>
                   <Mail size={16} aria-hidden="true" />
                   {getRechargeEmail(normalizedToken, clientEmail)}
+                </dd>
+              </div>
+              <div className="confirm-item">
+                <dt>账户 ID</dt>
+                <dd title={tokenAccountId}>{tokenAccountId ? maskValue(tokenAccountId) : '-'}</dd>
+              </div>
+              <div className="confirm-item token-card">
+                <dt>Token JSON</dt>
+                <dd className="token-summary">
+                  <span className="token-state complete">
+                    <CheckCircle2 size={14} aria-hidden="true" />
+                    JSON 已识别
+                  </span>
+                  <span className="token-state complete">
+                    <CheckCircle2 size={14} aria-hidden="true" />
+                    Access Token
+                  </span>
+                  <span className="token-state complete">
+                    <CheckCircle2 size={14} aria-hidden="true" />
+                    Session Token
+                  </span>
                 </dd>
               </div>
             </dl>
@@ -803,9 +912,14 @@ function App() {
               <button className="secondary-button" type="button" onClick={() => setShowConfirm(false)}>
                 返回修改
               </button>
-              <button className="primary-button danger" type="button" onClick={handleRedeem} disabled={redeemLoading}>
+              <button
+                className={`primary-button danger confirm-submit ${redeemLoading ? 'is-loading' : ''}`}
+                type="button"
+                onClick={handleRedeem}
+                disabled={redeemLoading}
+              >
                 {redeemLoading ? <Loader2 size={18} className="spin" /> : <Send size={18} />}
-                <span>{redeemLoading ? '兑换中' : '确认充值'}</span>
+                <span>{redeemLoading ? '正在充值' : '确认充值'}</span>
               </button>
             </div>
           </section>
