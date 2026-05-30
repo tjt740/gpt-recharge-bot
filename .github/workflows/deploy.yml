@@ -12,7 +12,32 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Deploy over SSH
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Build
+        run: |
+          npm ci
+          npm run build
+          tar -czf dist.tar.gz -C dist .
+
+      - name: Upload dist package
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          source: dist.tar.gz
+          target: /tmp/card-recharge-release
+          overwrite: true
+
+      - name: Activate release
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SERVER_HOST }}
@@ -20,4 +45,12 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           script_stop: true
           script: |
-            /var/www/card-recharge/deploy.sh
+            set -e
+            rm -rf /tmp/card-recharge-dist
+            mkdir -p /tmp/card-recharge-dist
+            tar -xzf /tmp/card-recharge-release/dist.tar.gz -C /tmp/card-recharge-dist
+            sudo rm -rf /var/www/card-recharge/dist
+            sudo mkdir -p /var/www/card-recharge/dist
+            sudo cp -r /tmp/card-recharge-dist/. /var/www/card-recharge/dist/
+            sudo nginx -t
+            sudo systemctl reload nginx
